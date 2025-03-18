@@ -2,11 +2,11 @@ import streamlit as st
 import os
 import time
 import hashlib
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from cryptography.hazmat.backends import default_backend
 import base64
 import json
 from pathlib import Path
+from nacl.secret import SecretBox
+from nacl.encoding import Base64Encoder
 
 from langchain.document_loaders import PyPDFLoader
 from langchain.vectorstores import Chroma
@@ -34,7 +34,7 @@ if "vector_store_created" not in st.session_state:
 
 # 암호화 키 설정 (실제 앱에서는 환경 변수나 더 안전한 방법으로 관리해야 함)
 ENCRYPTION_KEY = st.secrets.get("ENCRYPTION_KEY", "wclubsecretkey12").encode()
-IV = b'wclubiv123456789'
+box = SecretBox(ENCRYPTION_KEY)
 
 # OpenAI API 키 설정
 OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", "")
@@ -48,22 +48,21 @@ VECTOR_DB_DIR = DATA_DIR / "chroma_db"
 
 # 암호화 및 복호화 함수
 def encrypt_data(data):
-    cipher = Cipher(algorithms.AES(ENCRYPTION_KEY), modes.CBC(IV), backend=default_backend())
-    encryptor = cipher.encryptor()
-    json_data = json.dumps(data)
-    padded_data = json_data.encode('utf-8')
-    # 16바이트 단위로 패딩
-    padded_data += b' ' * (16 - (len(padded_data) % 16))
-    ct_bytes = encryptor.update(padded_data) + encryptor.finalize()
-    return base64.b64encode(ct_bytes).decode('utf-8')
+    try:
+        # 데이터를 JSON 문자열로 변환
+        json_data = json.dumps(data)
+        # 암호화
+        encrypted = box.encrypt(json_data.encode('utf-8'), encoder=Base64Encoder)
+        return encrypted.decode('utf-8')
+    except Exception:
+        return ""
 
 def decrypt_data(encrypted_data):
     try:
-        ct = base64.b64decode(encrypted_data)
-        cipher = Cipher(algorithms.AES(ENCRYPTION_KEY), modes.CBC(IV), backend=default_backend())
-        decryptor = cipher.decryptor()
-        pt = decryptor.update(ct) + decryptor.finalize()
-        return json.loads(pt.rstrip().decode('utf-8'))
+        # 복호화
+        decrypted = box.decrypt(encrypted_data.encode('utf-8'), encoder=Base64Encoder)
+        # JSON으로 파싱
+        return json.loads(decrypted.decode('utf-8'))
     except Exception:
         return {}
 
