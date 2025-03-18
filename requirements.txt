@@ -7,4 +7,4 @@ langchain-text-splitters
 tiktoken
 pypdf
 pynacl 
-pysqlite3-binary
+pysqlite3-binary == 3.35.0
