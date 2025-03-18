@@ -7,3 +7,4 @@ langchain-text-splitters
 tiktoken
 pypdf
 pynacl 
+pysqlite3-binary
