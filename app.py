@@ -2,8 +2,8 @@ import streamlit as st
 import os
 import time
 import hashlib
-from Crypto.Cipher import AES
-from Crypto.Util.Padding import pad, unpad
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.backends import default_backend
 import base64
 import json
 from pathlib import Path
@@ -48,17 +48,22 @@ VECTOR_DB_DIR = DATA_DIR / "chroma_db"
 
 # 암호화 및 복호화 함수
 def encrypt_data(data):
-    cipher = AES.new(ENCRYPTION_KEY, AES.MODE_CBC, IV)
+    cipher = Cipher(algorithms.AES(ENCRYPTION_KEY), modes.CBC(IV), backend=default_backend())
+    encryptor = cipher.encryptor()
     json_data = json.dumps(data)
-    ct_bytes = cipher.encrypt(pad(json_data.encode(), AES.block_size))
+    padded_data = json_data.encode('utf-8')
+    # 16바이트 단위로 패딩
+    padded_data += b' ' * (16 - (len(padded_data) % 16))
+    ct_bytes = encryptor.update(padded_data) + encryptor.finalize()
     return base64.b64encode(ct_bytes).decode('utf-8')
 
 def decrypt_data(encrypted_data):
     try:
         ct = base64.b64decode(encrypted_data)
-        cipher = AES.new(ENCRYPTION_KEY, AES.MODE_CBC, IV)
-        pt = unpad(cipher.decrypt(ct), AES.block_size)
-        return json.loads(pt.decode('utf-8'))
+        cipher = Cipher(algorithms.AES(ENCRYPTION_KEY), modes.CBC(IV), backend=default_backend())
+        decryptor = cipher.decryptor()
+        pt = decryptor.update(ct) + decryptor.finalize()
+        return json.loads(pt.rstrip().decode('utf-8'))
     except Exception:
         return {}
 
