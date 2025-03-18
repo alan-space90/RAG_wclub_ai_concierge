@@ -203,44 +203,7 @@ def get_vector_store():
     if not PDF_FILE.exists():
         return None
     
-    # 벡터 스토어가 세션에 없지만 디렉토리가 존재하는 경우 로드 시도
-    if VECTOR_DB_DIR.exists():
-        try:
-            # ChromaDB 클라이언트 생성
-            import chromadb
-            from chromadb.config import Settings
-            
-            # 임베딩 함수 생성
-            embeddings = OpenAIEmbeddings(
-                model="text-embedding-3-small",
-                openai_api_key=OPENAI_API_KEY
-            )
-            
-            # ChromaDB 클라이언트 생성
-            chroma_client = chromadb.Client(Settings(
-                persist_directory=str(VECTOR_DB_DIR),
-                anonymized_telemetry=False
-            ))
-            
-            # 컬렉션 확인
-            collection_name = "wclub_docs"
-            if collection_name in [col.name for col in chroma_client.list_collections()]:
-                # 벡터 스토어 로드
-                vector_store = Chroma(
-                    client=chroma_client,
-                    collection_name=collection_name,
-                    embedding_function=embeddings
-                )
-                
-                # 세션에 저장
-                st.session_state.vector_store = vector_store
-                return vector_store
-        except Exception as e:
-            st.error(f"벡터 스토어 로드 중 오류가 발생했습니다: {str(e)}")
-            # 오류 발생 시 None 반환
-            return None
-    
-    # 벡터 스토어가 없는 경우 None 반환
+    # 세션에 벡터 스토어가 없으면 None 반환 (인메모리 모드이므로 디스크에서 로드 불가)
     return None
 
 def create_vector_store():
@@ -264,17 +227,16 @@ def create_vector_store():
         shutil.rmtree(VECTOR_DB_DIR)
     
     try:
-        # 벡터 스토어 생성 - 임시 경로에 저장
-        # ChromaDB 설정에 persist_directory는 실제로 디렉터리를 생성할 수 있는 위치여야 함
+        # 벡터 스토어 생성 - 인메모리 모드 사용
         import chromadb
         from chromadb.config import Settings
         
         # 임시 디렉토리가 없으면 생성
         os.makedirs(VECTOR_DB_DIR, exist_ok=True)
         
-        # 인메모리 클라이언트로 먼저 시도
+        # 인메모리 클라이언트로 사용 (persist_directory 사용하지 않음)
         chroma_client = chromadb.Client(Settings(
-            persist_directory=str(VECTOR_DB_DIR),
+            is_persistent=False,  # 인메모리 모드
             anonymized_telemetry=False
         ))
         
