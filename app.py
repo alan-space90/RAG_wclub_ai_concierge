@@ -1,19 +1,10 @@
-__import__('pysqlite3')
-import sys
-sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
-
 import streamlit as st
 import os
 import time
-import hashlib
-import base64
-import json
 from pathlib import Path
-from nacl.secret import SecretBox
-from nacl.encoding import Base64Encoder
 
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_community.vectorstores import Chroma
+from langchain.document_loaders import PyPDFLoader
+from langchain.vectorstores import Chroma
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_core.runnables import RunnablePassthrough
@@ -24,251 +15,218 @@ from langchain_core.prompts import ChatPromptTemplate
 st.set_page_config(
     page_title="W Club AI 컨시어지",
     page_icon="💎",
-    layout="centered",
+    layout="wide",
     initial_sidebar_state="expanded",
 )
 
 # 세션 상태 초기화
-if "authenticated" not in st.session_state:
-    st.session_state.authenticated = False
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "vector_store_created" not in st.session_state:
     st.session_state.vector_store_created = False
 
-# 암호화 키 설정 (실제 앱에서는 환경 변수나 더 안전한 방법으로 관리해야 함)
-raw_key = st.secrets.get("ENCRYPTION_KEY", "wclubsecretkey12")
-# 키를 정확히 32바이트로 변환
-ENCRYPTION_KEY = hashlib.sha256(raw_key.encode()).digest()
-box = SecretBox(ENCRYPTION_KEY)
-
-# OpenAI API 키 설정
-OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", "")
+# 커스텀 CSS
+st.markdown(
+    """
+    <style>
+    .stApp {
+        background-color: #f9f9f9;
+    }
+    .main-header {
+        font-size: 2.5rem;
+        color: #6c2d82;
+        text-align: center;
+        margin-bottom: 1rem;
+    }
+    .sub-header {
+        font-size: 1.2rem;
+        color: #666;
+        text-align: center;
+        margin-bottom: 2rem;
+    }
+    .stChatMessage {
+        background-color: white;
+        border-radius: 15px;
+        padding: 15px;
+        margin-bottom: 15px;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        border-left: 5px solid #6c2d82;
+    }
+    .stChatMessage.user {
+        border-left: 5px solid #4a8fe7;
+    }
+    .stTextInput>div>div>input {
+        border-radius: 20px;
+    }
+    .status-box {
+        background-color: #f0f0f0;
+        border-radius: 10px;
+        padding: 20px;
+        margin-bottom: 20px;
+        text-align: center;
+    }
+    .sidebar-header {
+        font-size: 1.5rem;
+        color: #6c2d82;
+        margin-bottom: 1rem;
+        text-align: center;
+    }
+    .footer {
+        text-align: center;
+        margin-top: 40px;
+        color: #666;
+        font-size: 0.8rem;
+    }
+    .api-input {
+        background-color: #f0f0f0;
+        padding: 15px;
+        border-radius: 10px;
+        margin-bottom: 20px;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
 
 # 데이터 디렉토리 설정
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)
-USERS_FILE = DATA_DIR / "users.enc"
 PDF_FILE = DATA_DIR / "wclub_manual.pdf"
-# 벡터 DB는 /tmp 디렉토리에 저장 (Streamlit Cloud에서 쓰기 가능한 디렉토리)
-VECTOR_DB_DIR = Path("/tmp/chroma_db")
+VECTOR_DB_DIR = DATA_DIR / "chroma_db"
 
-# 암호화 및 복호화 함수
-def encrypt_data(data):
-    try:
-        # 데이터를 JSON 문자열로 변환
-        json_data = json.dumps(data)
-        # 암호화
-        encrypted = box.encrypt(json_data.encode('utf-8'), encoder=Base64Encoder)
-        return encrypted.decode('utf-8')
-    except Exception:
-        return ""
-
-def decrypt_data(encrypted_data):
-    try:
-        # 복호화
-        decrypted = box.decrypt(encrypted_data.encode('utf-8'), encoder=Base64Encoder)
-        # JSON으로 파싱
-        return json.loads(decrypted.decode('utf-8'))
-    except Exception:
-        return {}
-
-# 사용자 데이터 로드 및 저장 함수
-def load_users():
-    # 기본 사용자 정보 정의
-    default_users = {
-        "admin@wclub.com": {
-            "password": hashlib.sha256("admin123".encode()).hexdigest(),
-            "name": "관리자"
-        },
-        "guest@wclub.com": {
-            "password": hashlib.sha256("guest123".encode()).hexdigest(),
-            "name": "게스트"
-        }
-    }
+# 사이드바 구성
+with st.sidebar:
+    st.markdown('<div class="sidebar-header">W Club AI 컨시어지</div>', unsafe_allow_html=True)
     
-    # 파일이 없으면 기본 사용자 생성
-    if not USERS_FILE.exists():
-        save_users(default_users)
-        return default_users
-    
-    try:
-        # 파일 읽기 시도
-        with open(USERS_FILE, 'rb') as f:
-            encrypted_data = f.read().decode('utf-8')
-        
-        # 복호화 시도
-        users = decrypt_data(encrypted_data)
-        
-        # 복호화 실패하거나 사용자 정보가 비어있으면 기본 사용자 다시 생성
-        if not users:
-            save_users(default_users)
-            return default_users
-            
-        return users
-    except Exception:
-        # 오류 발생 시 기본 사용자 생성
-        save_users(default_users)
-        return default_users
-
-def save_users(users):
-    encrypted_data = encrypt_data(users)
-    with open(USERS_FILE, 'w') as f:
-        f.write(encrypted_data)
-
-# 로그인 검증 함수
-def verify_login(email, password):
-    users = load_users()
-    password_hash = hashlib.sha256(password.encode()).hexdigest()
-    
-    if email in users and users[email]["password"] == password_hash:
-        return True, users[email]["name"]
-    return False, ""
-
-# 로그인 UI
-def login_ui():
-    st.markdown(
-        """
-        <style>
-        .login-container {
-            max-width: 400px;
-            margin: 0 auto;
-            padding: 20px;
-            border-radius: 10px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-            background-color: #f8f9fa;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True
-    )
-    
+    # 로고 이미지 (원하는 이미지로 변경)
     st.image("https://i.ibb.co/fDBHYpP/wclub-logo.png", width=200)
-    st.title("W Club AI 컨시어지")
     
-    with st.container():
-        st.markdown("<div class='login-container'>", unsafe_allow_html=True)
-        
-        email = st.text_input("이메일", placeholder="이메일을 입력하세요")
-        password = st.text_input("비밀번호", type="password", placeholder="비밀번호를 입력하세요")
-        
-        if st.button("로그인", use_container_width=True):
-            if email and password:
-                success, user_name = verify_login(email, password)
-                if success:
-                    st.session_state.authenticated = True
-                    st.session_state.user_name = user_name
-                    st.rerun()
-                else:
-                    st.error("이메일 또는 비밀번호가 올바르지 않습니다.")
-            else:
-                st.warning("이메일과 비밀번호를 모두 입력해주세요.")
-        
-        st.markdown("</div>", unsafe_allow_html=True)
-        
-        st.markdown("---")
-        st.markdown(
-            """
-            <div style='text-align: center; color: gray; font-size: 0.8em;'>
-            © 2023 W Club. All rights reserved.<br>
-            Worthy or Wealthy - Private Social Club Members Only
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
-# PDF 파일 업로드 함수
-def upload_pdf():
-    st.title("PDF 매뉴얼 업로드")
+    st.markdown("---")
     
-    uploaded_file = st.file_uploader("W Club 매뉴얼 PDF를 업로드해주세요", type="pdf")
+    # API 키 입력 박스
+    st.markdown('<div class="api-input">', unsafe_allow_html=True)
+    st.markdown("### OpenAI API 키 설정")
+    openai_api_key = st.text_input("API 키를 입력하세요", type="password", placeholder="sk-...")
+    if openai_api_key:
+        os.environ["OPENAI_API_KEY"] = openai_api_key
+        st.success("✅ API 키가 설정되었습니다.")
+    st.markdown('</div>', unsafe_allow_html=True)
     
-    if uploaded_file:
-        with open(PDF_FILE, "wb") as f:
-            f.write(uploaded_file.getvalue())
-        st.success("PDF 파일이 성공적으로 업로드되었습니다.")
-        
-        # 벡터 스토어 생성
-        create_vector_store()
+    # 대화 기록 초기화 버튼
+    st.markdown("### 💬 대화 관리")
+    if st.button("대화 기록 초기화", use_container_width=True):
+        st.session_state.messages = []
         st.rerun()
+    
+    st.markdown("---")
+    
+    # 사용 안내
+    st.markdown("### ℹ️ 사용 안내")
+    with st.expander("사용 방법", expanded=False):
+        st.markdown("""
+        1. OpenAI API 키를 입력하세요.
+        2. 질문을 입력하고 AI와 대화하세요.
+        """)
 
-# 벡터 스토어 생성 함수
+# 벡터 스토어 자동 생성 함수
 @st.cache_resource
 def get_vector_store():
-    # 세션에 벡터 스토어가 있으면 반환
-    if hasattr(st.session_state, 'vector_store') and st.session_state.vector_store is not None:
-        return st.session_state.vector_store
-        
-    # PDF 파일이 없으면 None 반환
-    if not PDF_FILE.exists():
-        return None
-    
-    # 세션에 벡터 스토어가 없으면 None 반환 (인메모리 모드이므로 디스크에서 로드 불가)
-    return None
-
-def create_vector_store():
-    # OpenAI API 키 설정
-    os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
-    
-    # PDF 로드 및 분할
-    loader = PyPDFLoader(str(PDF_FILE))
-    pages = loader.load_and_split()
-    
-    # 텍스트 분할
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
-    docs = text_splitter.split_documents(pages)
-    
-    # 임베딩 및 벡터 스토어 생성
-    embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
-    
-    # 기존 벡터 스토어가 있으면 삭제
-    if VECTOR_DB_DIR.exists():
-        import shutil
-        shutil.rmtree(VECTOR_DB_DIR)
-    
-    try:
-        # 벡터 스토어 생성 - 인메모리 모드 사용
-        import chromadb
-        from chromadb.config import Settings
-        
-        # 임시 디렉토리가 없으면 생성
-        os.makedirs(VECTOR_DB_DIR, exist_ok=True)
-        
-        # 인메모리 클라이언트로 사용 (persist_directory 사용하지 않음)
-        chroma_client = chromadb.Client(Settings(
-            is_persistent=False,  # 인메모리 모드
-            anonymized_telemetry=False
-        ))
-        
-        # 컬렉션 생성
-        collection_name = "wclub_docs"
-        # 기존 컬렉션 삭제 후 새로 생성
+    """벡터 스토어를 가져오거나 생성합니다."""
+    # 이미 생성된 벡터 스토어가 있는지 확인
+    if os.path.exists(VECTOR_DB_DIR):
         try:
-            chroma_client.delete_collection(collection_name)
-        except:
+            embeddings = OpenAIEmbeddings(
+                model="text-embedding-3-small",
+                openai_api_key=os.environ.get("OPENAI_API_KEY", "")
+            )
+            return Chroma(
+                persist_directory=str(VECTOR_DB_DIR),
+                embedding_function=embeddings
+            )
+        except Exception:
+            # 오류 발생 시 새로 생성
             pass
+    
+    # PDF 파일이 없는 경우 샘플 텍스트로 대체
+    if not os.path.exists(PDF_FILE):
+        # 샘플 데이터로 벡터 스토어 생성
+        from langchain.schema import Document
+        
+        # 샘플 문서 생성
+        sample_docs = [
+            Document(
+                page_content="W Club은 고품격 남녀 매칭 서비스를 제공합니다. 회원님들의 행복한 만남을 위해 최선을 다하고 있습니다.",
+                metadata={"source": "sample"}
+            ),
+            Document(
+                page_content="약속 장소 변경은 약속일 2일 전 열리는 대화방을 통해 상대 회원과 협의 후 진행해주세요.",
+                metadata={"source": "sample"}
+            ),
+            Document(
+                page_content="뱃지 인증을 원하시면 앱 내에서 [내정보 > 프로필 수정 > 내 프로필 수정 > 뱃지 추가/변경하기] 메뉴를 통해 신청하실 수 있습니다.",
+                metadata={"source": "sample"}
+            ),
+            Document(
+                page_content="약속 취소는 [내정보 > 약속관리]에서 하실 수 있으며, 상대방에 대한 배려로 취소 사유를 꼭 알려주세요.",
+                metadata={"source": "sample"}
+            ),
+            Document(
+                page_content="W Club 매칭 성공률을 높이기 위해서는 프로필 사진과 자기소개를 정성껏 작성해주세요.",
+                metadata={"source": "sample"}
+            ),
+        ]
+        
+        try:
+            embeddings = OpenAIEmbeddings(
+                model="text-embedding-3-small",
+                openai_api_key=os.environ.get("OPENAI_API_KEY", "")
+            )
             
-        collection = chroma_client.create_collection(name=collection_name)
-        
-        # 벡터 스토어 생성
-        vector_store = Chroma(
-            client=chroma_client,
-            collection_name=collection_name,
-            embedding_function=embeddings
-        )
-        
-        # 문서 추가
-        vector_store.add_documents(docs)
-        
-        # 세션에 저장
-        st.session_state.vector_store = vector_store
-        st.session_state.vector_store_created = True
-        
-    except Exception as e:
-        st.error(f"벡터 스토어 생성 중 오류가 발생했습니다: {str(e)}")
-        import traceback
-        st.error(traceback.format_exc())
-        return None
+            # 기존 벡터 스토어가 있으면 삭제
+            if os.path.exists(VECTOR_DB_DIR):
+                import shutil
+                shutil.rmtree(VECTOR_DB_DIR)
+            
+            # 벡터 스토어 생성 및 저장
+            return Chroma.from_documents(
+                sample_docs, 
+                embeddings,
+                persist_directory=str(VECTOR_DB_DIR)
+            )
+        except Exception as e:
+            st.error(f"벡터 스토어 생성 실패: {e}")
+            return None
+    else:
+        # PDF 파일이 있는 경우 PDF로 벡터 스토어 생성
+        try:
+            # PDF 로드 및 분할
+            loader = PyPDFLoader(str(PDF_FILE))
+            pages = loader.load_and_split()
+            
+            # 텍스트 분할
+            text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+            docs = text_splitter.split_documents(pages)
+            
+            # 임베딩 및 벡터 스토어 생성
+            embeddings = OpenAIEmbeddings(
+                model="text-embedding-3-small",
+                openai_api_key=os.environ.get("OPENAI_API_KEY", "")
+            )
+            
+            # 기존 벡터 스토어가 있으면 삭제
+            if os.path.exists(VECTOR_DB_DIR):
+                import shutil
+                shutil.rmtree(VECTOR_DB_DIR)
+            
+            # 벡터 스토어 생성 및 저장
+            return Chroma.from_documents(
+                docs, 
+                embeddings,
+                persist_directory=str(VECTOR_DB_DIR)
+            )
+        except Exception as e:
+            st.error(f"벡터 스토어 생성 실패: {e}")
+            return None
 
 # 챗봇 프롬프트 템플릿
 def get_prompt_template():
@@ -290,7 +248,7 @@ def get_prompt_template():
     9. 고객의 질문에 공감하는 표현으로 답변을 시작하고, 문제 해결 방법을 안내하세요.
     10. 마무리는 "추가 문의 사항이나 언제든 편하게 말씀 부탁드립니다.  감사합니다." 마무리합니다.
     11. 문장의 가독성이 좋게 줄바꿈 등을 적절하게 사용하세요. 모든 문장은 1문장 단위로 줄바꿈하세요.
-    12. 자세한 답변을 위해 제공된 문서 내용은 최대한 반영하세요.                                                          
+    12. 자세한 답변을 위해 제공된 문서 내용은 최대한 반영하세요.
     13. 처음부터 끝까지 모든 문장은 매우 정중하게 표현하세요.
 
     질문: {question}
@@ -316,7 +274,7 @@ def get_chat_chain():
         model="gpt-4o-mini",
         temperature=0.2,
         streaming=True,
-        openai_api_key=OPENAI_API_KEY
+        openai_api_key=os.environ.get("OPENAI_API_KEY", "")
     )
     
     # 프롬프트 템플릿 설정
@@ -332,52 +290,42 @@ def get_chat_chain():
     
     return rag_chain
 
-# 챗봇 UI
-def chatbot_ui():
-    st.title(f"W Club AI 컨시어지")
-    st.markdown(f"안녕하세요, {st.session_state.user_name}님! 무엇을 도와드릴까요?")
-    
-    # 사이드바
-    with st.sidebar:
-        st.image("https://i.ibb.co/fDBHYpP/wclub-logo.png", width=150)
-        st.markdown("## W Club AI 컨시어지")
-        st.markdown("더블유클럽 회원님들의 질문에 답변해드립니다.")
-        
-        if st.button("로그아웃"):
-            st.session_state.clear()
-            st.rerun()
-        
-        # 관리자만 PDF 업로드 가능
-        if st.session_state.get("user_name") == "관리자":
-            st.markdown("---")
-            st.markdown("### 관리자 메뉴")
-            if st.button("매뉴얼 PDF 업로드"):
-                st.session_state.show_pdf_upload = True
-                st.rerun()
-    
-    # PDF 업로드 화면 표시
-    if st.session_state.get("show_pdf_upload", False):
-        upload_pdf()
-        return
-    
-    # 벡터 스토어 확인
-    vector_store = get_vector_store()
-    if vector_store is None:
-        st.warning("매뉴얼 PDF가 업로드되지 않았습니다. 관리자에게 문의하세요.")
-        return
-    
-    # 채팅 UI
+# 메인 섹션
+col1, col2, col3 = st.columns([1, 3, 1])
+with col2:
+    st.markdown('<h1 class="main-header">W Club AI 컨시어지</h1>', unsafe_allow_html=True)
+    st.markdown('<div class="sub-header">더블유클럽 회원님들의 질문에 답변해드립니다</div>', unsafe_allow_html=True)
+
+# 시스템 상태 확인
+system_ready = os.environ.get("OPENAI_API_KEY", "")
+
+if not system_ready:
+    st.markdown('<div class="status-box">', unsafe_allow_html=True)
+    st.warning("⚠️ 시작하려면 사이드바에서 OpenAI API 키를 입력해주세요.")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# 채팅 인터페이스
+chat_container = st.container(height=500)
+with chat_container:
+    # 채팅 메시지 표시
     for message in st.session_state.messages:
-        avatar = "🧑‍💼" if message["role"] == "user" else "🤖"
+        avatar = "👤" if message["role"] == "user" else "🤖"
         with st.chat_message(message["role"], avatar=avatar):
             st.markdown(message["content"])
+
+# 사용자 입력 처리
+user_input = st.chat_input("질문을 입력하세요...", disabled=not system_ready)
+if user_input:
+    # 사용자 메시지 추가
+    st.session_state.messages.append({"role": "user", "content": user_input})
     
-    # 사용자 입력 처리
-    if prompt := st.chat_input("질문을 입력하세요..."):
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user", avatar="🧑‍💼"):
-            st.markdown(prompt)
-        
+    # 사용자 메시지 표시
+    with chat_container:
+        with st.chat_message("user", avatar="👤"):
+            st.markdown(user_input)
+    
+    # 어시스턴트 응답 생성
+    with chat_container:
         with st.chat_message("assistant", avatar="🤖"):
             message_placeholder = st.empty()
             full_response = ""
@@ -385,50 +333,28 @@ def chatbot_ui():
             # 챗봇 체인 생성
             chat_chain = get_chat_chain()
             
-            # 스트리밍 응답
-            for chunk in chat_chain.stream(prompt):
-                full_response += chunk
-                message_placeholder.markdown(full_response + "▌")
-                time.sleep(0.01)
-            
-            message_placeholder.markdown(full_response)
-        
-        st.session_state.messages.append({"role": "assistant", "content": full_response})
-
-# 메인 앱 실행
-def main():
-    # 커스텀 CSS
-    st.markdown(
-        """
-        <style>
-        .stApp {
-            background-color: #f5f7f9;
-        }
-        .stChatMessage {
-            background-color: white;
-            border-radius: 10px;
-            padding: 10px;
-            margin-bottom: 10px;
-            box-shadow: 0 1px 2px rgba(0,0,0,0.1);
-        }
-        .stTextInput>div>div>input {
-            border-radius: 20px;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True
-    )
+            if chat_chain is None:
+                full_response = "죄송합니다. 시스템을 초기화하는 중 오류가 발생했습니다. API 키가 올바른지 확인해주세요."
+                message_placeholder.markdown(full_response)
+            else:
+                try:
+                    # 스트리밍 응답 표시
+                    with st.spinner("응답을 생성하고 있습니다..."):
+                        for chunk in chat_chain.stream(user_input):
+                            full_response += chunk
+                            message_placeholder.markdown(full_response + "▌")
+                            time.sleep(0.01)
+                        
+                        message_placeholder.markdown(full_response)
+                except Exception as e:
+                    full_response = f"죄송합니다. 응답 생성 중 오류가 발생했습니다: {str(e)}"
+                    message_placeholder.markdown(full_response)
     
-    # OpenAI API 키 확인
-    if not OPENAI_API_KEY:
-        st.error("OpenAI API 키가 설정되지 않았습니다. Streamlit의 secrets.toml 파일에 OPENAI_API_KEY를 설정해주세요.")
-        return
+    # 어시스턴트 메시지 저장
+    st.session_state.messages.append({"role": "assistant", "content": full_response})
     
-    # 로그인 상태에 따른 화면 표시
-    if not st.session_state.authenticated:
-        login_ui()
-    else:
-        chatbot_ui()
+    # 채팅 컨테이너를 아래로 스크롤
+    st.rerun()
 
-if __name__ == "__main__":
-    main() 
+# 푸터
+st.markdown('<div class="footer">© 2024 W Club AI 컨시어지 - Private Social Club Members Only</div>', unsafe_allow_html=True) 
