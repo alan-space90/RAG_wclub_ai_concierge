@@ -70,25 +70,41 @@ def decrypt_data(encrypted_data):
 
 # 사용자 데이터 로드 및 저장 함수
 def load_users():
-    if not USERS_FILE.exists():
-        # 기본 사용자 생성 (관리자)
-        default_users = {
-            "admin@wclub.com": {
-                "password": hashlib.sha256("admin123".encode()).hexdigest(),
-                "name": "관리자"
-            },
-            "guest@wclub.com": {
-                "password": hashlib.sha256("guest123".encode()).hexdigest(),
-                "name": "게스트"
-            }
+    # 기본 사용자 정보 정의
+    default_users = {
+        "admin@wclub.com": {
+            "password": hashlib.sha256("admin123".encode()).hexdigest(),
+            "name": "관리자"
+        },
+        "guest@wclub.com": {
+            "password": hashlib.sha256("guest123".encode()).hexdigest(),
+            "name": "게스트"
         }
+    }
+    
+    # 파일이 없으면 기본 사용자 생성
+    if not USERS_FILE.exists():
         save_users(default_users)
         return default_users
     
-    with open(USERS_FILE, 'rb') as f:
-        encrypted_data = f.read().decode('utf-8')
-    
-    return decrypt_data(encrypted_data)
+    try:
+        # 파일 읽기 시도
+        with open(USERS_FILE, 'rb') as f:
+            encrypted_data = f.read().decode('utf-8')
+        
+        # 복호화 시도
+        users = decrypt_data(encrypted_data)
+        
+        # 복호화 실패하거나 사용자 정보가 비어있으면 기본 사용자 다시 생성
+        if not users:
+            save_users(default_users)
+            return default_users
+            
+        return users
+    except Exception:
+        # 오류 발생 시 기본 사용자 생성
+        save_users(default_users)
+        return default_users
 
 def save_users(users):
     encrypted_data = encrypt_data(users)
