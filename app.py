@@ -195,18 +195,53 @@ def upload_pdf():
 # 벡터 스토어 생성 함수
 @st.cache_resource
 def get_vector_store():
-    if not VECTOR_DB_DIR.exists() or not PDF_FILE.exists():
+    # 세션에 벡터 스토어가 있으면 반환
+    if hasattr(st.session_state, 'vector_store') and st.session_state.vector_store is not None:
+        return st.session_state.vector_store
+        
+    # PDF 파일이 없으면 None 반환
+    if not PDF_FILE.exists():
         return None
     
-    embeddings = OpenAIEmbeddings(
-        model="text-embedding-3-small",
-        openai_api_key=OPENAI_API_KEY
-    )
+    # 벡터 스토어가 세션에 없지만 디렉토리가 존재하는 경우 로드 시도
+    if VECTOR_DB_DIR.exists():
+        try:
+            # ChromaDB 클라이언트 생성
+            import chromadb
+            from chromadb.config import Settings
+            
+            # 임베딩 함수 생성
+            embeddings = OpenAIEmbeddings(
+                model="text-embedding-3-small",
+                openai_api_key=OPENAI_API_KEY
+            )
+            
+            # ChromaDB 클라이언트 생성
+            chroma_client = chromadb.Client(Settings(
+                persist_directory=str(VECTOR_DB_DIR),
+                anonymized_telemetry=False
+            ))
+            
+            # 컬렉션 확인
+            collection_name = "wclub_docs"
+            if collection_name in [col.name for col in chroma_client.list_collections()]:
+                # 벡터 스토어 로드
+                vector_store = Chroma(
+                    client=chroma_client,
+                    collection_name=collection_name,
+                    embedding_function=embeddings
+                )
+                
+                # 세션에 저장
+                st.session_state.vector_store = vector_store
+                return vector_store
+        except Exception as e:
+            st.error(f"벡터 스토어 로드 중 오류가 발생했습니다: {str(e)}")
+            # 오류 발생 시 None 반환
+            return None
     
-    return Chroma(
-        persist_directory=str(VECTOR_DB_DIR),
-        embedding_function=embeddings
-    )
+    # 벡터 스토어가 없는 경우 None 반환
+    return None
 
 def create_vector_store():
     # OpenAI API 키 설정
@@ -228,14 +263,50 @@ def create_vector_store():
         import shutil
         shutil.rmtree(VECTOR_DB_DIR)
     
-    # 벡터 스토어 생성 및 저장
-    Chroma.from_documents(
-        docs, 
-        embeddings,
-        persist_directory=str(VECTOR_DB_DIR)
-    )
-    
-    st.session_state.vector_store_created = True
+    try:
+        # 벡터 스토어 생성 - 임시 경로에 저장
+        # ChromaDB 설정에 persist_directory는 실제로 디렉터리를 생성할 수 있는 위치여야 함
+        import chromadb
+        from chromadb.config import Settings
+        
+        # 임시 디렉토리가 없으면 생성
+        os.makedirs(VECTOR_DB_DIR, exist_ok=True)
+        
+        # 인메모리 클라이언트로 먼저 시도
+        chroma_client = chromadb.Client(Settings(
+            persist_directory=str(VECTOR_DB_DIR),
+            anonymized_telemetry=False
+        ))
+        
+        # 컬렉션 생성
+        collection_name = "wclub_docs"
+        # 기존 컬렉션 삭제 후 새로 생성
+        try:
+            chroma_client.delete_collection(collection_name)
+        except:
+            pass
+            
+        collection = chroma_client.create_collection(name=collection_name)
+        
+        # 벡터 스토어 생성
+        vector_store = Chroma(
+            client=chroma_client,
+            collection_name=collection_name,
+            embedding_function=embeddings
+        )
+        
+        # 문서 추가
+        vector_store.add_documents(docs)
+        
+        # 세션에 저장
+        st.session_state.vector_store = vector_store
+        st.session_state.vector_store_created = True
+        
+    except Exception as e:
+        st.error(f"벡터 스토어 생성 중 오류가 발생했습니다: {str(e)}")
+        import traceback
+        st.error(traceback.format_exc())
+        return None
 
 # 챗봇 프롬프트 템플릿
 def get_prompt_template():
