@@ -33,7 +33,9 @@ if "vector_store_created" not in st.session_state:
     st.session_state.vector_store_created = False
 
 # 암호화 키 설정 (실제 앱에서는 환경 변수나 더 안전한 방법으로 관리해야 함)
-ENCRYPTION_KEY = st.secrets.get("ENCRYPTION_KEY", "wclubsecretkey12").encode()
+raw_key = st.secrets.get("ENCRYPTION_KEY", "wclubsecretkey12")
+# 키를 정확히 32바이트로 변환
+ENCRYPTION_KEY = hashlib.sha256(raw_key.encode()).digest()
 box = SecretBox(ENCRYPTION_KEY)
 
 # OpenAI API 키 설정
