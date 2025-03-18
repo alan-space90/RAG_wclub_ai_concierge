@@ -50,7 +50,8 @@ DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)
 USERS_FILE = DATA_DIR / "users.enc"
 PDF_FILE = DATA_DIR / "wclub_manual.pdf"
-VECTOR_DB_DIR = DATA_DIR / "chroma_db"
+# 벡터 DB는 /tmp 디렉토리에 저장 (Streamlit Cloud에서 쓰기 가능한 디렉토리)
+VECTOR_DB_DIR = Path("/tmp/chroma_db")
 
 # 암호화 및 복호화 함수
 def encrypt_data(data):
